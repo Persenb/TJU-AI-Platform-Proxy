@@ -52,10 +52,10 @@ pip install fastapi uvicorn httpx orjson
 cp .env.example .env
 ```
 
-然后编辑 `.env`，将 `你的Token` 替换为实际密钥：
+然后编辑 `.env`，将 `你的KEY` 替换为实际密钥：
 
 ```
-TJU_API_KEY=你的真实Token
+TJU_API_KEY=你的真实KEY
 ```
 
 **方式二：直接在源文件中硬编码**
@@ -68,7 +68,7 @@ TJU_API_KEY = os.environ.get("TJU_API_KEY", "")
 
 改为：
 ```python
-TJU_API_KEY = "你的真实Token"
+TJU_API_KEY = "你的真实KEY"
 ```
 
 ### 4. 启动代理
