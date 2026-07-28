@@ -88,7 +88,7 @@ python tju_proxy.py
 
 ### 5. 配置 Claude Code
 
-编辑 `C:\Users\你的用户名\.claude\settings.json`，填写以下内容：
+编辑 `C:\Users\你的用户名\.claude\settings.json` (若没有则创建settings.json)，填写以下内容：
 
 ```json
 {
