@@ -33,7 +33,7 @@ Claude Code  ←→  本地代理 (:8000)  ←→  天津大学 AI 平台
 
 ```bash
 git clone https://github.com/Persenb/TJU-AI-Platform-Proxy.git
-cd tju-proxy
+cd TJU-AI-Platform-Proxy
 ```
 
 ### 2. 安装依赖
@@ -102,7 +102,7 @@ python tju_proxy.py
 > `ANTHROPIC_AUTH_TOKEN` 代理不验证，填空值或任意填写即可。
 
 ### 6. 启动 Claude Code
-保持代理窗口运行，在项目文件夹终端中正常输入命令：
+保持代理窗口运行，在想要使用Claude Code的项目文件夹中打开终端，输入命令：
 ```bash
 claude
 ```
