@@ -1,0 +1,6 @@
+# 环境变量（含真实 Token，不要提交）
+.env
+*.log
+__pycache__/
+.idea/
+*.pyc
