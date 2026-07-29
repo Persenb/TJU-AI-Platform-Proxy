@@ -27,6 +27,12 @@
     可选：用 TJU_MODEL 指定上游模型名（否则透传客户端模型名）
     export TJU_MODEL=gpt-4o
 
+    可选：限制上游输出上限（防止超时，默认 32000）
+    export MAX_OUTPUT_TOKENS=32000
+
+    可选：启用系统提示词优化，剥离 Claude 特有内容
+    export SYSTEM_PROMPT_OPTIMIZE=1
+
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 🚀 启动服务
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -110,22 +116,11 @@ def _j(data: dict) -> str:
 # ============================================================
 # 全局 HTTP 客户端（连接池复用，避免每次请求重建 TCP/TLS）
 # ============================================================
-_http_client: httpx.AsyncClient | None = None
+_http_client = None  # type: ignore
 
 
-def get_http_client() -> httpx.AsyncClient:
-    global _http_client
-    if _http_client is None:
-        _http_client = httpx.AsyncClient(
-            timeout=httpx.Timeout(300.0, connect=10.0),
-            follow_redirects=False,
-            http2=True,  # HTTP/2 多路复用
-            limits=httpx.Limits(
-                max_keepalive_connections=10,  # 保持 10 个空闲连接
-                max_connections=20,             # 最大总连接数
-                keepalive_expiry=30.0,          # 空闲连接保活 30 秒
-            ),
-        )
+def get_http_client():  # type: ignore
+    """返回全局 HTTP 客户端（lifespan 中初始化，此处只读）"""
     return _http_client
 
 # ============================================================
@@ -147,7 +142,9 @@ def _load_env_file(path: str = ".env") -> None:
     except FileNotFoundError:
         pass  # 没有 .env 不影响运行
 
-_load_env_file()
+# 使用脚本所在目录的绝对路径，确保从任何位置运行都能找到 .env
+_base_dir = os.path.dirname(os.path.abspath(__file__))
+_load_env_file(os.path.join(_base_dir, ".env"))
 
 
 # ============================================================
@@ -160,6 +157,12 @@ LISTEN_HOST = "127.0.0.1"
 LISTEN_PORT = int(os.environ.get("PROXY_PORT", "8000"))
 TJU_MODEL_OVERRIDE = os.environ.get("TJU_MODEL", "")
 
+# 系统提示词优化：设为 "1" 时自动剥离 Claude 特有身份标识和 thinking 指令
+SYSTEM_PROMPT_OPTIMIZE = os.environ.get("SYSTEM_PROMPT_OPTIMIZE", "") == "1"
+
+# 上游最大输出 token 上限（上游模型通常有输出长度限制）
+MAX_OUTPUT_TOKENS = int(os.environ.get("MAX_OUTPUT_TOKENS", "32000"))
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -167,15 +170,70 @@ logging.basicConfig(
 )
 log = logging.getLogger("tju-proxy")
 
+# ============================================================
+# 系统提示词优化（可选）
+# ============================================================
+
+def _optimize_system_prompt(text: str) -> str:
+    """
+    当 SYSTEM_PROMPT_OPTIMIZE=1 时启用。
+    剥离 Claude 特有内容，让上游模型（如 Qwen）更准确理解任务，同时减少 token 消耗。
+
+    当前处理：
+    - 移除 "You are Claude" / "created by Anthropic" 等身份标识
+    - 移除 thinking 块相关指令（上游模型不支持 Anthropic thinking）
+    """
+    if not text or not SYSTEM_PROMPT_OPTIMIZE:
+        return text
+
+    import re
+
+    # 1. 移除 Claude 身份标识段落（通常在第一句）
+    #    "You are Claude, an AI assistant created by Anthropic..."
+    text = re.sub(
+        r'(?i)you\s+are\s+claude\s*,?\s*(?:an\s+)?(?:ai\s+)?(?:assistant|model|agent)'
+        r'\s*(?:,?\s*(?:created|built|made|developed)\s+by\s+anthropic[^.\n]*)?[.\n]',
+        '', text, count=1
+    )
+
+    # 2. 移除 thinking 块相关指令（上游模型不支持，留着浪费 token 还可能产生幻觉）
+    text = re.sub(
+        r'(?im)^(?:you\s+should\s+)?think\s+(?:step\s+by\s+step|carefully|about|through)'
+        r'[^.\n]*[.\n]?\s*',
+        '', text
+    )
+    text = re.sub(
+        r'(?is)use\s*<thinking>.*?</thinking>\s*tags?\s*',
+        '', text
+    )
+    text = re.sub(
+        r'(?i)before\s+(answering|responding|replying|acting)\s*,\s*think[^.\n]*[.\n]',
+        '', text
+    )
+
+    # 3. 清理多余空行
+    result = '\n'.join(
+        line for line in text.split('\n')
+        if line.strip()
+    ).strip()
+
+    return result
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global _http_client
     _http_client = httpx.AsyncClient(
         timeout=httpx.Timeout(300.0, connect=10.0),
         follow_redirects=False,
-        limits=httpx.Limits(max_keepalive_connections=5, max_connections=10),
+        http2=True,
+        limits=httpx.Limits(
+            max_keepalive_connections=10,
+            max_connections=20,
+            keepalive_expiry=30.0,
+        ),
     )
-    log.info("HTTP 连接池已初始化")
+    log.info("HTTP 连接池已初始化（HTTP/2 + Keep-Alive 30s）")
     yield
     if _http_client is not None:
         await _http_client.aclose()
@@ -382,8 +440,14 @@ def convert_anthropic_to_openai(anthropic_body: dict) -> tuple[dict, str]:
             system_text = "\n".join(texts).strip()
         else:
             system_text = str(system_content).strip()
-        if system_text:
-            openai_messages.append({"role": "system", "content": system_text})
+        # 可选的系统提示词优化（剥离 Claude 特有内容）
+        optimized = _optimize_system_prompt(system_text)
+        if optimized:
+            openai_messages.append({"role": "system", "content": optimized})
+            if SYSTEM_PROMPT_OPTIMIZE:
+                saved = len(system_text) - len(optimized)
+                if saved > 0:
+                    log.info("系统提示词优化: 减少 %d 字符 (%d -> %d)", saved, len(system_text), len(optimized))
 
     # ---- 2. messages 转换 ----
     raw_messages = anthropic_body.get("messages", [])
@@ -393,13 +457,17 @@ def convert_anthropic_to_openai(anthropic_body: dict) -> tuple[dict, str]:
     original_model = anthropic_body.get("model", "")
     upstream_model = TJU_MODEL_OVERRIDE or original_model
 
-    # ---- 4. 构建请求体 ----
+    # ---- 4. 构建请求体（限制 max_tokens 上限避免上游超时） ----
+    requested_tokens = anthropic_body.get("max_tokens", MAX_OUTPUT_TOKENS)
+    capped_tokens = min(requested_tokens, MAX_OUTPUT_TOKENS)
     openai_body: dict = {
         "model": upstream_model,
         "messages": openai_messages,
-        "max_tokens": anthropic_body.get("max_tokens", 65536),
+        "max_tokens": capped_tokens,
         "stream": anthropic_body.get("stream", False),
     }
+    if capped_tokens != requested_tokens:
+        log.info("max_tokens 已截断: %d -> %d (上限 %d)", requested_tokens, capped_tokens, MAX_OUTPUT_TOKENS)
 
     # 可选参数透传
     for key in ("temperature", "top_p"):
@@ -843,11 +911,12 @@ async def handle_messages(request: Request):
 
     # ---- 5. 处理上游 HTTP 错误 ----
     if upstream_resp.status_code >= 400:
-        err_detail = ""
+        err_body = b""
         try:
-            err_detail = str(upstream_resp.json())
+            err_body = await upstream_resp.aread()
         except Exception:
-            err_detail = upstream_resp.text[:500]
+            err_body = upstream_resp.content[:2000]
+        err_detail = err_body.decode("utf-8", errors="replace")[:500]
         log.error("上游返回错误 %s: %s", upstream_resp.status_code, err_detail)
         return Response(
             content=_j({"error": {"message": f"上游错误 (HTTP {upstream_resp.status_code})",
@@ -857,15 +926,21 @@ async def handle_messages(request: Request):
 
     # ---- 6. 解析上游完整 JSON 响应 ----
     try:
-        openai_resp = upstream_resp.json()
+        raw_body = await upstream_resp.aread()
+        openai_resp = orjson.loads(raw_body)
+    except orjson.JSONDecodeError as e:
+        return Response(content=_j({"error": {"message": f"上游响应解析失败: {str(e)}"}}),
+                        status_code=502, media_type="application/json")
     except Exception as e:
-        return Response(content=_j({"error": {"message": f"无法解析上游响应: {str(e)}"}}),
+        return Response(content=_j({"error": {"message": f"上游响应处理异常: {str(e)}"}}),
                         status_code=502, media_type="application/json")
 
     # ---- 7. 转换为 Anthropic 格式 ----
     anthropic_resp = convert_openai_to_anthropic_nonstream(openai_resp, original_model)
-    log.info("-> resp: id=%s stop_reason=%s usage=%s content_blocks=%d",
+    upstream_model_name = openai_resp.get("model", "?")
+    log.info("-> resp: id=%s model=%s stop_reason=%s usage=%s content_blocks=%d",
              anthropic_resp.get("id", "?"),
+             upstream_model_name,
              anthropic_resp.get("stop_reason"),
              anthropic_resp.get("usage"),
              len(anthropic_resp.get("content", [])))
@@ -936,6 +1011,8 @@ if __name__ == "__main__":
     log.info(" Stream:   supported")
     log.info(" Tool Use: supported")
     log.info(" Token:    %s", "OK" if TJU_API_KEY else "MISSING!")
+    log.info(" Optimize: %s", "ON (strip Claude identity)" if SYSTEM_PROMPT_OPTIMIZE else "OFF")
+    log.info(" Max Tokens: %d", MAX_OUTPUT_TOKENS)
     if TJU_MODEL_OVERRIDE:
         log.info(" Model:    %s (override)", TJU_MODEL_OVERRIDE)
     else:

@@ -25,7 +25,7 @@ Claude Code  ←→  本地代理 (:8000)  ←→  天津大学 AI 平台
 ## 环境要求
 
 - Python 3.12+
-- 天大 AI 平台有效 Token APIKEY
+- 天大 AI 平台有效 Token API_KEY
 - 校园网或VPN连接
 ## 快速开始
 
@@ -84,7 +84,9 @@ python tju_proxy.py
  Upstream: https://ai.tju.edu.cn/api/v3/chat/completions
  Stream:   supported
  Tool Use: supported
+ ...
 ```
+代理运行窗口处 Ctrl+C 关闭
 
 ### 5. 配置 Claude Code
 
@@ -94,12 +96,39 @@ python tju_proxy.py
 {
   "env": {
     "ANTHROPIC_BASE_URL": "http://127.0.0.1:8000",
-    "ANTHROPIC_AUTH_TOKEN": "sk-placeholder"
+    "ANTHROPIC_AUTH_TOKEN": "sk-placeholder",
+    "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+    "CLAUDE_CODE_SIMPLE_SYSTEM_PROMPT": "1",
+    "CLAUDE_CODE_ATTRIBUTION_HEADER": "0",
+    "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1",
+    "CLAUDE_CODE_EFFORT_LEVEL": "max"
+  },
+  "disableWorkflows": true,
+  "disableBundledSkills": true,
+  "model": "tju-llm",
+  "permissions": {
+    "deny": ["NotebookEdit", "CronCreate", "CronDelete", "CronList", "ScheduleWakeup"]
   }
 }
 ```
 
 > `ANTHROPIC_AUTH_TOKEN` 代理不验证，填空值或任意填写即可。
+
+#### 配置项说明
+
+| 配置 | 作用 |
+|---|---|
+| `ANTHROPIC_BASE_URL` | 指向本地代理 `http://127.0.0.1:8000` |
+| `ANTHROPIC_AUTH_TOKEN` | 占位符，代理不校验 |
+| `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` | **关闭非必要上下文**（git diff、文件树、环境信息等），大幅减少 `input_tokens` |
+| `CLAUDE_CODE_SIMPLE_SYSTEM_PROMPT=1` | 使用精简版系统提示词，进一步减少 `input_tokens` |
+| `CLAUDE_CODE_ATTRIBUTION_HEADER=0` | 关闭请求头中的归属信息，减少请求体积 |
+| `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1` | 禁止自动记忆功能，避免记忆相关 token 消耗 |
+| `CLAUDE_CODE_EFFORT_LEVEL=max` | 让模型尽力回答，提升回复质量 |
+| `disableWorkflows: true` | 不加载 workflow 技能，减少系统提示词 |
+| `disableBundledSkills: true` | 不加载内置技能提示词 |
+| `model: "tju-llm"` | 固定模型名为 `tju-llm`，确保与上游一致 |
+| `permissions.deny` | 禁用不需要的功能，避免误触 |
 
 ### 6. 启动 Claude Code
 保持代理窗口运行，在想要使用Claude Code的项目文件夹中打开终端，输入命令：
@@ -107,14 +136,14 @@ python tju_proxy.py
 claude
 ```
 
-## 配置选项
+## 环境配置选项
 
 | 环境变量 | 说明 | 默认值 |
 |---|---|---|
 | `TJU_API_KEY` | 天大平台 APIKEY | `""`（必填） |
 | `TJU_MODEL` | 覆盖上游模型名 | 透传客户端模型名 |
 | `PROXY_PORT` | 本地监听端口 | `8000` |
-| `MAX_OUTPUT_TOKENS` | 上游最大输出 token 上限，防止超时 | `16384` |
+| `MAX_OUTPUT_TOKENS` | 上游最大输出 token 上限，防止超时 | `32000` |
 | `SYSTEM_PROMPT_OPTIMIZE` | 设置 `1` 启用：自动剥离系统提示词中 Claude 特有身份标识和 thinking 指令，减少 token 消耗，适配非 Claude 模型 | `""`（关闭） |
 
 也可通过命令行参数指定端口：
@@ -150,11 +179,11 @@ python tju_proxy.py --port 8080
 | `usage.completion_tokens` | `usage.output_tokens` | 重命名 |
 
 
-## 已知限制
+## ⭐已知限制⭐
 
-- **模型响应速度**：代理本身开销已尽量优化，总响应时间取决于平台模型推理速度，由于每次发送指令会传入大量系统提示词，且无缓存机制，导致响应很慢，尤其开始的前几轮会话中。
+- **模型响应速度**：代理本身开销已尽量优化，总响应时间取决于平台模型推理速度，由于每次发送指令会传入大量系统提示词，且无缓存机制，导致响应很慢，并且会随上下文增长变慢，为此在setting中对部分功能进行了限制，以尽量减少input_tokens，可自主修改
 - **无 Thinking 块显示**：上游模型不支持 Anthropic `thinking` 内容块，Claude Code 不会显示详细思考过程
-- **无提示缓存**：天大平台无 Anthropic 缓存机制，每次请求全额计算 `input_tokens`
+- **无提示缓存**：天大平台无 Anthropic 缓存机制，每次请求全额计算 `input_tokens`，即不区分缓存命中和缓存未命中
 - **上游非流式**：代理对天大平台发送非流式请求，等完整响应后拼接 SSE 发给 Claude Code
 - **文件读取缓慢**：模型本身能力有限加上少量的中转延迟，难以处理大规模、多文件项目
 - **未知缺陷和运行bug**：期待反馈和修改
