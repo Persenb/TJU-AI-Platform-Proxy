@@ -114,6 +114,8 @@ claude
 | `TJU_API_KEY` | 天大平台 APIKEY | `""`（必填） |
 | `TJU_MODEL` | 覆盖上游模型名 | 透传客户端模型名 |
 | `PROXY_PORT` | 本地监听端口 | `8000` |
+| `MAX_OUTPUT_TOKENS` | 上游最大输出 token 上限，防止超时 | `16384` |
+| `SYSTEM_PROMPT_OPTIMIZE` | 设置 `1` 启用：自动剥离系统提示词中 Claude 特有身份标识和 thinking 指令，减少 token 消耗，适配非 Claude 模型 | `""`（关闭） |
 
 也可通过命令行参数指定端口：
 
@@ -150,7 +152,7 @@ python tju_proxy.py --port 8080
 
 ## 已知限制
 
-- **模型速度取决于上游**：代理本身开销已优化至 ~10ms，总响应时间取决于天大平台模型推理速度
+- **模型响应速度**：代理本身开销已尽量优化，总响应时间取决于平台模型推理速度，由于每次发送指令会传入大量系统提示词，且无缓存机制，导致响应很慢，尤其开始的前几轮会话中。
 - **无 Thinking 块显示**：上游模型不支持 Anthropic `thinking` 内容块，Claude Code 不会显示详细思考过程
 - **无提示缓存**：天大平台无 Anthropic 缓存机制，每次请求全额计算 `input_tokens`
 - **上游非流式**：代理对天大平台发送非流式请求，等完整响应后拼接 SSE 发给 Claude Code
